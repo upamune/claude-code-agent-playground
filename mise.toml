@@ -1,0 +1,6 @@
+[tools]
+bun = "1.2.21"
+
+[tasks]
+format = "mise exec pipx:ruff -- ruff format ."
+lint = "mise exec pipx:ruff -- ruff check . --fix"
