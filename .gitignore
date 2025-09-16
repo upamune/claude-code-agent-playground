@@ -502,3 +502,4 @@ pyrightconfig.json
 z/
 
 *.csv
+*.db

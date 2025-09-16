@@ -22,11 +22,10 @@ Usage:
 
 import argparse
 import asyncio
-import csv
+import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from claude_code_sdk import (
     ClaudeSDKClient,
@@ -46,25 +45,16 @@ from rich.text import Text
 from rich.prompt import Prompt
 
 
-# Rich コンソール
 console = Console()
 
-# タスクファイルのパス
-TASK_FILE = Path(__file__).parent / "tasks.csv"
+DB_FILE = Path(__file__).parent / "tasks.db"
 
-# タスクの状態定義
 TASK_STATUSES = ["未着手", "進行中", "レビュー中", "完了"]
 TASK_PRIORITIES = ["高", "中", "低"]
 
-# CSVヘッダー
-CSV_HEADERS = ["id", "name", "priority", "status", "created_at", "updated_at"]
-
-# アイコン定義
 STATUS_ICONS = {"未着手": "⭕", "進行中": "🔄", "レビュー中": "👀", "完了": "✅"}
-
 PRIORITY_ICONS = {"高": "🔥", "中": "📋", "低": "📝"}
 
-# システムプロンプト定義（グローバル）
 SYSTEM_PROMPT = """あなたは高度なタスク管理専門エージェントです。タスク管理の効率化と組織化を支援することが唯一の使命です。
 
 <role>
@@ -146,44 +136,76 @@ SYSTEM_PROMPT = """あなたは高度なタスク管理専門エージェント�
 重要：タスク管理機能の範囲内で最高のサービスを提供し、範囲外のリクエストは丁寧かつ明確に拒否してください。"""
 
 
-def ensure_task_file():
-    """タスクファイルが存在しない場合は作成する"""
-    if not TASK_FILE.exists():
-        with open(TASK_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(CSV_HEADERS)
+def get_db_connection() -> sqlite3.Connection:
+    """データベース接続を取得"""
+    conn = sqlite3.connect(str(DB_FILE))
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def load_tasks() -> List[Dict[str, str]]:
-    """CSVファイルからタスクを読み込む"""
-    ensure_task_file()
-    tasks = []
-    try:
-        with open(TASK_FILE, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                tasks.append(row)
-    except FileNotFoundError:
-        pass
+def ensure_database():
+    """データベースとテーブルが存在しない場合は作成する"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            status TEXT NOT NULL
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def load_tasks(
+    status_filter: Optional[str] = None, priority_filter: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """データベースからタスクを読み込む"""
+    ensure_database()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    query = "SELECT * FROM tasks WHERE 1=1"
+    params = []
+
+    if status_filter and status_filter in TASK_STATUSES:
+        query += " AND status = ?"
+        params.append(status_filter)
+
+    if priority_filter and priority_filter in TASK_PRIORITIES:
+        query += " AND priority = ?"
+        params.append(priority_filter)
+
+    query += " ORDER BY id"
+
+    cursor.execute(query, params)
+    tasks = [dict(row) for row in cursor.fetchall()]
+
+    conn.close()
     return tasks
 
 
-def save_tasks(tasks: List[Dict[str, str]]):
-    """タスクをCSVファイルに保存"""
-    with open(TASK_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerows(tasks)
+def get_task_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
+    """タスクIDまたは名前でタスクを取得"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
+    if identifier.isdigit():
+        cursor.execute("SELECT * FROM tasks WHERE id = ?", (int(identifier),))
+        task = cursor.fetchone()
+        if task:
+            conn.close()
+            return dict(task)
 
-def get_next_task_id() -> int:
-    """次のタスクIDを生成（連番）"""
-    tasks = load_tasks()
-    if not tasks:
-        return 1
+    cursor.execute("SELECT * FROM tasks WHERE name = ?", (identifier,))
+    task = cursor.fetchone()
 
-    max_id = max(int(task["id"]) for task in tasks)
-    return max_id + 1
+    conn.close()
+    return dict(task) if task else None
 
 
 @tool(
@@ -209,27 +231,24 @@ async def add_task(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    # 新しいタスクを作成
-    now = datetime.now().isoformat()
-    new_task = {
-        "id": str(get_next_task_id()),
-        "name": task_name,
-        "priority": priority,
-        "status": "未着手",
-        "created_at": now,
-        "updated_at": now,
-    }
+    ensure_database()
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    # 既存タスクを読み込み、新しいタスクを追加
-    tasks = load_tasks()
-    tasks.append(new_task)
-    save_tasks(tasks)
+    cursor.execute(
+        """INSERT INTO tasks (name, priority, status)
+           VALUES (?, ?, ?)""",
+        (task_name, priority, "未着手"),
+    )
+
+    conn.commit()
+    conn.close()
 
     return {
         "content": [
             {
                 "type": "text",
-                "text": f"✅ タスクを追加しました:\n📝 {task_name}\n🔥 優先度: {priority}\n📅 作成日時: {now}",
+                "text": f"✅ タスクを追加しました:\n📝 {task_name}\n🔥 優先度: {priority}",
             }
         ]
     }
@@ -245,17 +264,10 @@ async def add_task(args: Dict[str, Any]) -> Dict[str, Any]:
 )
 async def list_tasks(args: Dict[str, Any]) -> Dict[str, Any]:
     """タスク一覧を表示"""
-    tasks = load_tasks()
-
-    # フィルタリング（有効な値のみ適用）
     status_filter = args.get("status_filter")
     priority_filter = args.get("priority_filter")
 
-    filtered_tasks = tasks
-    if status_filter and status_filter in TASK_STATUSES:
-        filtered_tasks = [t for t in filtered_tasks if t["status"] == status_filter]
-    if priority_filter and priority_filter in TASK_PRIORITIES:
-        filtered_tasks = [t for t in filtered_tasks if t["priority"] == priority_filter]
+    filtered_tasks = load_tasks(status_filter, priority_filter)
 
     if not filtered_tasks:
         filter_text = ""
@@ -276,27 +288,23 @@ async def list_tasks(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    # Richテーブルでタスクリストを作成
     table = Table(title="📋 タスク一覧", show_header=True, header_style="bold blue")
     table.add_column("ID", style="dim", width=4)
     table.add_column("タスク名", style="bold", min_width=20)
     table.add_column("優先度", justify="center", width=8)
     table.add_column("ステータス", justify="center", width=10)
-    table.add_column("作成日時", style="dim", width=16)
 
     for task in filtered_tasks:
         status_icon = STATUS_ICONS.get(task["status"], "❓")
         priority_icon = PRIORITY_ICONS.get(task["priority"], "❓")
 
         table.add_row(
-            task["id"],
+            str(task["id"]),
             task["name"],
             f"{priority_icon} {task['priority']}",
             f"{status_icon} {task['status']}",
-            task["created_at"][:16],
         )
 
-    # テーブルを文字列として取得
     from io import StringIO
 
     string_io = StringIO()
@@ -332,7 +340,6 @@ async def update_task(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    # バリデーション
     if new_status and new_status not in TASK_STATUSES:
         return {
             "content": [
@@ -353,13 +360,7 @@ async def update_task(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    # タスクを検索
-    tasks = load_tasks()
-    task_to_update = None
-    for task in tasks:
-        if task["id"] == task_identifier or task["name"] == task_identifier:
-            task_to_update = task
-            break
+    task_to_update = get_task_by_identifier(task_identifier)
 
     if not task_to_update:
         return {
@@ -371,17 +372,29 @@ async def update_task(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    # タスク更新
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
     updates = []
+    update_fields = []
+    params = []
+
     if new_status:
-        task_to_update["status"] = new_status
+        update_fields.append("status = ?")
+        params.append(new_status)
         updates.append(f"ステータス: {new_status}")
+
     if new_priority:
-        task_to_update["priority"] = new_priority
+        update_fields.append("priority = ?")
+        params.append(new_priority)
         updates.append(f"優先度: {new_priority}")
 
-    task_to_update["updated_at"] = datetime.now().isoformat()
-    save_tasks(tasks)
+    params.append(task_to_update["id"])
+
+    query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = ?"
+    cursor.execute(query, params)
+    conn.commit()
+    conn.close()
 
     return {
         "content": [
@@ -418,13 +431,7 @@ async def delete_task(args: Dict[str, Any]) -> Dict[str, Any]:
     """タスクを削除"""
     task_identifier = args["task_identifier"]
 
-    # タスクを検索
-    tasks = load_tasks()
-    task_to_delete = None
-    for i, task in enumerate(tasks):
-        if task["id"] == task_identifier or task["name"] == task_identifier:
-            task_to_delete = tasks.pop(i)
-            break
+    task_to_delete = get_task_by_identifier(task_identifier)
 
     if not task_to_delete:
         return {
@@ -436,7 +443,12 @@ async def delete_task(args: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
 
-    save_tasks(tasks)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_to_delete["id"],))
+    conn.commit()
+    conn.close()
 
     return {
         "content": [
@@ -466,7 +478,6 @@ def display_message(msg):
                 # ツール使用を情報パネルで表示
                 tool_info = f"[bold cyan]ツール:[/bold cyan] {block.name}"
                 if block.input:
-                    # 入力パラメータを整形
                     input_str = ", ".join([f"{k}={v}" for k, v in block.input.items()])
                     tool_info += f"\n[dim]入力: {input_str}[/dim]"
 
@@ -479,10 +490,8 @@ def display_message(msg):
                 )
                 console.print(tool_panel)
     elif isinstance(msg, SystemMessage):
-        # システムメッセージは無視
         pass
     elif isinstance(msg, ResultMessage):
-        # 結果は Claude の応答で既に表示されているため、コストのみ表示
         if msg.total_cost_usd:
             console.print(f"💰 [dim]コスト: ${msg.total_cost_usd:.6f}[/dim]")
 
@@ -491,15 +500,12 @@ async def process_claude_response(client, prompt_text: str):
     """Claudeの応答をSpinnerと共に処理"""
     await client.query(prompt_text)
 
-    # Spinnerを表示しながら応答を待つ
     with console.status(
         "[bold green]🤖 Claude が考えています...", spinner="dots"
     ) as status:
         async for message in client.receive_response():
-            # メッセージを受信したらSpinnerを一時停止して表示
             status.stop()
             display_message(message)
-            # 次のメッセージがまだある場合はSpinnerを再開
             if isinstance(message, (AssistantMessage, SystemMessage)):
                 status.start()
 
@@ -515,14 +521,12 @@ async def demo_mode():
     )
     console.print(welcome_panel)
 
-    # MCP サーバーを作成
     task_server = create_sdk_mcp_server(
         name="task-manager",
         version="1.0.0",
         tools=[add_task, list_tasks, update_task, done_task, delete_task],
     )
 
-    # Claude Code オプション設定
     options = ClaudeCodeOptions(
         mcp_servers={"task_manager": task_server},
         allowed_tools=[
@@ -548,7 +552,6 @@ async def demo_mode():
     for i, prompt in enumerate(demo_prompts, 1):
         console.print()  # 改行
 
-        # プロンプトを美しく表示
         prompt_panel = Panel(
             Text(prompt, style="bold yellow"),
             title=f"🤖 ステップ {i}/{len(demo_prompts)}",
@@ -558,14 +561,11 @@ async def demo_mode():
         )
         console.print(prompt_panel)
 
-        # ClaudeSDKClient を使用してSpinnerと共に処理
         async with ClaudeSDKClient(options=options) as client:
             await process_claude_response(client, prompt)
 
-        # 少し待機
         await asyncio.sleep(1)
 
-    # 完了メッセージ
     completion_panel = Panel(
         "🎉 デモが完了しました！",
         title="完了",
@@ -594,14 +594,12 @@ async def interactive_mode():
     )
     console.print(welcome_panel)
 
-    # MCP サーバーを作成
     task_server = create_sdk_mcp_server(
         name="task-manager",
         version="1.0.0",
         tools=[add_task, list_tasks, update_task, done_task, delete_task],
     )
 
-    # Claude Code オプション設定
     options = ClaudeCodeOptions(
         mcp_servers={"task_manager": task_server},
         allowed_tools=[
@@ -634,7 +632,6 @@ async def interactive_mode():
             if not user_input:
                 continue
 
-            # ClaudeSDKClient を使用してSpinnerと共に処理
             async with ClaudeSDKClient(options=options) as client:
                 await process_claude_response(client, user_input)
 
