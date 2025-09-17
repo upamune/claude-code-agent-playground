@@ -6,7 +6,7 @@
 # ]
 # requires-python = ">=3.11"
 # [tool.uv]
-# exclude-newer = "2025-09-15T12:41:05Z"
+# exclude-newer = "2025-09-17T08:41:05Z"
 # ///
 
 import asyncio
@@ -15,15 +15,17 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from claude_code_sdk import (
-    ClaudeSDKClient,
-    ClaudeCodeOptions,
-    tool,
-    create_sdk_mcp_server,
     AssistantMessage,
-    TextBlock,
+    ClaudeCodeOptions,
+    ClaudeSDKClient,
+    HookContext,
+    HookMatcher,
     ResultMessage,
     SystemMessage,
+    TextBlock,
     ToolUseBlock,
+    create_sdk_mcp_server,
+    tool,
 )
 from rich.console import Console
 from rich.table import Table
@@ -40,6 +42,7 @@ TASK_PRIORITIES = ["高", "中", "低"]
 
 STATUS_ICONS = {"未着手": "⭕", "進行中": "🔄", "レビュー中": "👀", "完了": "✅"}
 PRIORITY_ICONS = {"高": "🔥", "中": "📋", "低": "📝"}
+
 
 SYSTEM_PROMPT = """あなたは高度なタスク管理専門エージェントです。タスク管理の効率化と組織化を支援することが唯一の使命です。
 
@@ -195,14 +198,10 @@ def get_task_by_id(task_id: int | str) -> Optional[Dict[str, Any]]:
 
 @tool(
     "add_task",
-    "新しいタスクを追加します。タスク名と優先度を指定してタスクを作成できます。",
-    {
-        "name": str,
-        "priority": str,  # "高", "中", "低" のいずれか
-    },
+    "新しいタスクを追加します。タスク名と優先度(高、中、低)を指定してタスクを作成できます。",
+    {"name": str, "priority": str},
 )
 async def add_task(args: Dict[str, Any]) -> Dict[str, Any]:
-    """新しいタスクを追加"""
     task_name = args["name"]
     priority = args.get("priority", "中")
 
@@ -474,6 +473,51 @@ async def interactive_mode():
         tools=[add_task, list_tasks, change_task_status],
     )
 
+    async def pre_tool_hook(
+        input_data: dict[str, Any], tool_use_id: str | None, context: HookContext
+    ) -> dict[str, Any]:
+        tool_name = input_data.get("tool_name", "")
+        tool_input = input_data.get("tool_input", {}) or {}
+
+        allowed_mcp = {
+            "mcp__task_manager__add_task",
+            "mcp__task_manager__list_tasks",
+            "mcp__task_manager__change_task_status",
+        }
+
+        def deny(reason: str) -> dict[str, Any]:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+
+        if tool_name in allowed_mcp:
+            return {}
+
+        if tool_name in {"Bash", "WebFetch"}:
+            return deny("Bash/WebFetch はこのエージェントでは許可されていません")
+
+        if tool_name in {"Read", "Edit"}:
+            fp = tool_input.get("file_path")
+            if not fp:
+                return deny("Read/Edit には file_path が必要です")
+
+            try:
+                requested = Path(fp).resolve()
+                allowed = DB_FILE.resolve()
+            except (OSError, ValueError):
+                return deny(f"無効なファイルパス: {fp}")
+
+            if requested != allowed:
+                return deny(f"Read/Edit は {allowed} のみ許可。要求: {fp}")
+
+            return {}
+
+        return deny(f"{tool_name} は許可されていません")
+
     options = ClaudeCodeOptions(
         mcp_servers={"task_manager": task_server},
         allowed_tools=[
@@ -481,8 +525,9 @@ async def interactive_mode():
             "mcp__task_manager__list_tasks",
             "mcp__task_manager__change_task_status",
         ],
-        permission_mode="acceptEdits",
         system_prompt=SYSTEM_PROMPT,
+        permission_mode="default",
+        hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_hook])]},
     )
 
     while True:
