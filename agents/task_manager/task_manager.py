@@ -87,8 +87,6 @@ SYSTEM_PROMPT = """あなたは高度なタスク管理専門エージェント�
 - add_task: 新規タスク追加（name: 必須, priority: 高/中/低）
 - list_tasks: タスク一覧表示（status_filter, priority_filter: オプション）
 - change_task_status: タスクのステータス変更（task_id, status）
-- done_task: タスク完了（task_id）
-- delete_task: タスク削除（task_id）
 
 注意：更新・削除などの操作はID指定のみに対応します。名前は重複の可能性があるため使用しません。
 
@@ -344,52 +342,6 @@ async def change_task_status(args: Dict[str, Any]) -> Dict[str, Any]:
 
     return { "content": [ { "type": "text", "text": ( "✅ タスクのステータスを更新しました:\n" f"#️⃣ ID: {task_to_update['id']}\n" f"📝 {task_to_update['name']}\n" f"🔄 {status_change}"), } ] }
 
-
-@tool(
-    "done_task",
-    "タスクを完了状態にします。IDで指定してください。よく使う操作のショートカットです。",
-    {
-        "task_id": int  # タスクID（数値）
-    },
-)
-async def done_task(args: Dict[str, Any]) -> Dict[str, Any]:
-    """タスクを完了にする（ショートカット）"""
-    return await change_task_status({"task_id": args.get("task_id"), "status": "完了"})
-
-
-@tool(
-    "delete_task",
-    "タスクを削除します。IDで指定してください。",
-    {
-        "task_id": int  # タスクID（数値）
-    },
-)
-async def delete_task(args: Dict[str, Any]) -> Dict[str, Any]:
-    """タスクを削除"""
-    task_id = args.get("task_id")
-    if task_id is None:
-        return { "content": [ {"type": "text", "text": "❌ エラー: タスクIDを指定してください。"} ] }
-
-    try:
-        int(task_id)
-    except (TypeError, ValueError):
-        return { "content": [ { "type": "text", "text": "❌ エラー: タスクIDは数値で指定してください。", } ] }
-
-    task_to_delete = get_task_by_id(task_id)
-
-    if not task_to_delete:
-        return { "content": [ { "type": "text", "text": f"❌ エラー: タスクが見つかりません: ID={task_id}", } ] }
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_to_delete["id"],))
-    conn.commit()
-    conn.close()
-
-    return { "content": [ { "type": "text", "text": f"🗑️ タスクを削除しました: #️⃣ ID: {task_to_delete['id']} / 📝 {task_to_delete['name']}", } ] }
-
-
 def display_message(msg):
     """メッセージをRichで美しく表示"""
     if isinstance(msg, AssistantMessage):
@@ -434,7 +386,7 @@ async def demo_mode():
     task_server = create_sdk_mcp_server(
         name="task-manager",
         version="1.0.0",
-        tools=[add_task, list_tasks, change_task_status, done_task, delete_task],
+        tools=[add_task, list_tasks, change_task_status],
     )
 
     options = ClaudeCodeOptions(
@@ -443,8 +395,6 @@ async def demo_mode():
             "mcp__task_manager__add_task",
             "mcp__task_manager__list_tasks",
             "mcp__task_manager__change_task_status",
-            "mcp__task_manager__done_task",
-            "mcp__task_manager__delete_task",
         ],
         permission_mode="acceptEdits",
         max_turns=5,
@@ -495,7 +445,7 @@ async def interactive_mode():
     task_server = create_sdk_mcp_server(
         name="task-manager",
         version="1.0.0",
-        tools=[add_task, list_tasks, change_task_status, done_task, delete_task],
+        tools=[add_task, list_tasks, change_task_status],
     )
 
     options = ClaudeCodeOptions(
@@ -504,8 +454,6 @@ async def interactive_mode():
             "mcp__task_manager__add_task",
             "mcp__task_manager__list_tasks",
             "mcp__task_manager__change_task_status",
-            "mcp__task_manager__done_task",
-            "mcp__task_manager__delete_task",
         ],
         permission_mode="acceptEdits",
         system_prompt=SYSTEM_PROMPT,
