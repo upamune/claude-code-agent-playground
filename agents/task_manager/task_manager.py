@@ -9,24 +9,11 @@
 # exclude-newer = "2025-09-15T12:41:05Z"
 # ///
 
-"""
-タスク管理エージェント
-
-効果的なタスク管理機能を提供するClaude Code SDKエージェント。
-CSVファイルベースの永続化とインタラクティブなタスク操作をサポート。
-
-Usage:
-    ./agents/task_manager/main.py
-    ./agents/task_manager/main.py --demo
-"""
-
-import argparse
 import asyncio
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 from claude_code_sdk import (
     ClaudeSDKClient,
     ClaudeCodeOptions,
@@ -43,7 +30,6 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.prompt import Prompt
-
 
 console = Console()
 
@@ -169,17 +155,20 @@ def load_tasks(
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    query = "SELECT * FROM tasks WHERE 1=1"
+    conditions = []
     params = []
 
     if status_filter and status_filter in TASK_STATUSES:
-        query += " AND status = ?"
+        conditions.append("status = ?")
         params.append(status_filter)
 
     if priority_filter and priority_filter in TASK_PRIORITIES:
-        query += " AND priority = ?"
+        conditions.append("priority = ?")
         params.append(priority_filter)
 
+    query = "SELECT * FROM tasks"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY id"
 
     cursor.execute(query, params)
@@ -218,7 +207,14 @@ async def add_task(args: Dict[str, Any]) -> Dict[str, Any]:
     priority = args.get("priority", "中")
 
     if priority not in TASK_PRIORITIES:
-        return { "content": [ { "type": "text", "text": f"❌ エラー: 優先度は {', '.join(TASK_PRIORITIES)} のいずれかを指定してください。", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"❌ エラー: 優先度は {', '.join(TASK_PRIORITIES)} のいずれかを指定してください。",
+                }
+            ]
+        }
 
     ensure_database()
     conn = get_db_connection()
@@ -233,7 +229,19 @@ async def add_task(args: Dict[str, Any]) -> Dict[str, Any]:
     conn.commit()
     conn.close()
 
-    return { "content": [ { "type": "text", "text": ( "✅ タスクを追加しました:\n" f"#️⃣ ID: {task_id}\n" f"📝 {task_name}\n" f"🔥 優先度: {priority}"), } ] }
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "✅ タスクを追加しました:\n"
+                    f"#️⃣ ID: {task_id}\n"
+                    f"📝 {task_name}\n"
+                    f"🔥 優先度: {priority}"
+                ),
+            }
+        ]
+    }
 
 
 @tool(
@@ -261,7 +269,14 @@ async def list_tasks(args: Dict[str, Any]) -> Dict[str, Any]:
                 filters.append(f"優先度: {priority_filter}")
             filter_text = f" ({', '.join(filters)})"
 
-        return { "content": [ { "type": "text", "text": f"📋 タスクが見つかりませんでした{filter_text}", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"📋 タスクが見つかりませんでした{filter_text}",
+                }
+            ]
+        }
 
     table = Table(title="📋 タスク一覧", show_header=True, header_style="bold blue")
     table.add_column("ID", style="dim", width=4)
@@ -304,24 +319,56 @@ async def change_task_status(args: Dict[str, Any]) -> Dict[str, Any]:
     new_status = args.get("status")
 
     if task_id is None:
-        return { "content": [ {"type": "text", "text": "❌ エラー: タスクIDを指定してください。"} ] }
+        return {
+            "content": [
+                {"type": "text", "text": "❌ エラー: タスクIDを指定してください。"}
+            ]
+        }
 
     # task_id は数値のみサポート
     try:
         int(task_id)
     except (TypeError, ValueError):
-        return { "content": [ { "type": "text", "text": "❌ エラー: タスクIDは数値で指定してください。", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "❌ エラー: タスクIDは数値で指定してください。",
+                }
+            ]
+        }
 
     if not new_status:
-        return { "content": [ { "type": "text", "text": "❌ エラー: 新しいステータスを指定してください。", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "❌ エラー: 新しいステータスを指定してください。",
+                }
+            ]
+        }
 
     if new_status not in TASK_STATUSES:
-        return { "content": [ { "type": "text", "text": f"❌ エラー: ステータスは {', '.join(TASK_STATUSES)} のいずれかを指定してください。", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"❌ エラー: ステータスは {', '.join(TASK_STATUSES)} のいずれかを指定してください。",
+                }
+            ]
+        }
 
     task_to_update = get_task_by_id(task_id)
 
     if not task_to_update:
-        return { "content": [ { "type": "text", "text": f"❌ エラー: タスクが見つかりません: ID={task_id}", } ] }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"❌ エラー: タスクが見つかりません: ID={task_id}",
+                }
+            ]
+        }
 
     old_status = task_to_update.get("status")
 
@@ -340,14 +387,33 @@ async def change_task_status(args: Dict[str, Any]) -> Dict[str, Any]:
         else new_status
     )
 
-    return { "content": [ { "type": "text", "text": ( "✅ タスクのステータスを更新しました:\n" f"#️⃣ ID: {task_to_update['id']}\n" f"📝 {task_to_update['name']}\n" f"🔄 {status_change}"), } ] }
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "✅ タスクのステータスを更新しました:\n"
+                    f"#️⃣ ID: {task_to_update['id']}\n"
+                    f"📝 {task_to_update['name']}\n"
+                    f"🔄 {status_change}"
+                ),
+            }
+        ]
+    }
+
 
 def display_message(msg):
     """メッセージをRichで美しく表示"""
     if isinstance(msg, AssistantMessage):
         for block in msg.content:
             if isinstance(block, TextBlock):
-                claude_panel = Panel( Text(block.text, style="white"), title="🤖 Claude", title_align="left", border_style="blue", padding=(0, 1),)
+                claude_panel = Panel(
+                    Text(block.text, style="white"),
+                    title="🤖 Claude",
+                    title_align="left",
+                    border_style="blue",
+                    padding=(0, 1),
+                )
                 console.print(claude_panel)
             elif isinstance(block, ToolUseBlock):
                 tool_info = f"[bold cyan]ツール:[/bold cyan] {block.name}"
@@ -355,7 +421,13 @@ def display_message(msg):
                     input_str = ", ".join([f"{k}={v}" for k, v in block.input.items()])
                     tool_info += f"\n[dim]入力: {input_str}[/dim]"
 
-                tool_panel = Panel( tool_info, title="🔧 ツール実行", title_align="left", border_style="green", padding=(0, 1),)
+                tool_panel = Panel(
+                    tool_info,
+                    title="🔧 ツール実行",
+                    title_align="left",
+                    border_style="green",
+                    padding=(0, 1),
+                )
                 console.print(tool_panel)
     elif isinstance(msg, SystemMessage):
         pass
@@ -378,52 +450,6 @@ async def process_claude_response(client, prompt_text: str):
                 status.start()
 
 
-async def demo_mode():
-    """デモモードでの自動実行"""
-    welcome_panel = Panel( "🎬 デモモードを開始します...", title="タスク管理エージェント デモ", title_align="center", border_style="magenta", padding=(1, 2),)
-    console.print(welcome_panel)
-
-    task_server = create_sdk_mcp_server(
-        name="task-manager",
-        version="1.0.0",
-        tools=[add_task, list_tasks, change_task_status],
-    )
-
-    options = ClaudeCodeOptions(
-        mcp_servers={"task_manager": task_server},
-        allowed_tools=[
-            "mcp__task_manager__add_task",
-            "mcp__task_manager__list_tasks",
-            "mcp__task_manager__change_task_status",
-        ],
-        permission_mode="acceptEdits",
-        max_turns=5,
-        system_prompt=SYSTEM_PROMPT,
-    )
-
-    demo_prompts = [
-        "タスク一覧を表示してください",
-        "「新しいプロジェクトの企画書作成」というタスクを高優先度で追加してください",
-        "「API ドキュメントの更新」というタスクを中優先度で追加してください",
-        "「新しいプロジェクトの企画書作成」タスクを完了にしてください",
-        "残っているタスクの一覧を表示してください",
-    ]
-
-    for i, prompt in enumerate(demo_prompts, 1):
-        console.print()  # 改行
-
-        prompt_panel = Panel( Text(prompt, style="bold yellow"), title=f"🤖 ステップ {i}/{len(demo_prompts)}", title_align="left", border_style="yellow", padding=(0, 1),)
-        console.print(prompt_panel)
-
-        async with ClaudeSDKClient(options=options) as client:
-            await process_claude_response(client, prompt)
-
-        await asyncio.sleep(1)
-
-    completion_panel = Panel( "🎉 デモが完了しました！", title="完了", title_align="center", border_style="green", padding=(1, 2),)
-    console.print(completion_panel)
-
-
 async def interactive_mode():
     """インタラクティブモード"""
     welcome_text = """📋 タスク管理エージェントへようこそ！
@@ -431,7 +457,7 @@ async def interactive_mode():
 自然な日本語でタスクを管理できます。
 例: 「新機能の設計書作成タスクを追加」「進行中のタスクを表示」
 
-[dim]終了方法: 'quit', 'exit', 'q' または Ctrl-D[/dim]"""
+[dim]終了方法: 'quit', 'exit', 'q'[/dim]"""
 
     welcome_panel = Panel(
         welcome_text,
@@ -465,7 +491,13 @@ async def interactive_mode():
             user_input = Prompt.ask("[bold cyan]💬 あなた[/bold cyan]").strip()
 
             if user_input.lower() in ["quit", "exit", "q"]:
-                goodbye_panel = Panel( "👋 ありがとうございました！", title="さようなら", title_align="center", border_style="green", padding=(0, 2),)
+                goodbye_panel = Panel(
+                    "👋 ありがとうございました！",
+                    title="さようなら",
+                    title_align="center",
+                    border_style="green",
+                    padding=(0, 2),
+                )
                 console.print(goodbye_panel)
                 break
 
@@ -476,35 +508,37 @@ async def interactive_mode():
                 await process_claude_response(client, user_input)
 
         except KeyboardInterrupt:
-            goodbye_panel = Panel( "👋 ありがとうございました！", title="中断されました", title_align="center", border_style="yellow", padding=(0, 2),)
-            console.print(goodbye_panel)
-            break
-        except EOFError:
-            goodbye_panel = Panel( "👋 ありがとうございました！", title="EOF", title_align="center", border_style="green", padding=(0, 2),)
+            goodbye_panel = Panel(
+                "👋 ありがとうございました！",
+                title="中断されました",
+                title_align="center",
+                border_style="yellow",
+                padding=(0, 2),
+            )
             console.print(goodbye_panel)
             break
         except Exception as e:
-            error_panel = Panel( f"❌ エラーが発生しました: {e}", title="エラー", title_align="left", border_style="red", padding=(0, 1),)
+            error_panel = Panel(
+                f"❌ エラーが発生しました: {e}",
+                title="エラー",
+                title_align="left",
+                border_style="red",
+                padding=(0, 1),
+            )
             console.print(error_panel)
 
 
 async def main():
-    """メイン関数"""
-    parser = argparse.ArgumentParser(
-        description="タスク管理エージェント - 効果的なタスク管理をサポート"
-    )
-    parser.add_argument( "--demo", action="store_true", help="デモモードで実行（決まったプロンプトを自動実行）",
-    )
-
-    args = parser.parse_args()
-
     try:
-        if args.demo:
-            await demo_mode()
-        else:
-            await interactive_mode()
+        await interactive_mode()
     except Exception as e:
-        error_panel = Panel( f"❌ 予期しないエラーが発生しました: {e}", title="致命的エラー", title_align="left", border_style="red", padding=(0, 1),)
+        error_panel = Panel(
+            f"❌ 予期しないエラーが発生しました: {e}",
+            title="致命的エラー",
+            title_align="left",
+            border_style="red",
+            padding=(0, 1),
+        )
         console.print(error_panel, file=sys.stderr)
         sys.exit(1)
 
